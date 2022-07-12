@@ -1,0 +1,190 @@
+# ================================ Customizable Settings ================================
+# ================================================================
+# Discount by Product
+#
+# Any matching item will be discounted by the entered amount.
+#
+#   - 'product_selector_match_type' determines whether we look for
+#     products that do or don't match the entered selectors. Can
+#     be:
+#       - ':include' to check if the product does match
+#       - ':exclude' to make sure the product doesn't match
+#   - 'product_selector_type' determines how eligible products
+#     will be identified and discounted. Can be either:
+#       - ':tag' to find products by tag
+#       - ':type' to find products by type
+#       - ':vendor' to find products by vendor
+#       - ':product_id' to find products by ID
+#       - ':variant_id' to find products by variant ID
+#       - ':subscription' to find subscription products
+#       - ':all' for all products
+#   - 'product_selectors' is a list of identifiers (from above)
+#     for qualifying products. Product/Variant ID lists should
+#     only contain numbers (ie. no quotes). If ':all' is used,
+#     this can also be 'nil'.
+#   - 'fee_selector_match_type' determines whether we look for
+#     products that do or don't match the entered selectors for calcualting the fee. Can
+#     be:
+#       - ':tag' to find products by tag
+#       - ':type' to find products by type
+#       - ':vendor' to find products by vendor
+#       - ':product_id' to find products by ID
+#       - ':variant_id' to find products by variant ID
+#       - ':subscription' to find subscription products
+#       - ':all' for all products
+#   - 'fee_selectors' is a list of identifiers (from above)
+#     for qualifying products to charge a fee. Product/Variant ID lists should
+#     only contain numbers (ie. no quotes). If ':all' is used,
+#     this can also be 'nil'.
+#   - 'fee_type' is the type of fee. Needs to be:
+#       - ':percent'
+#   - 'fee_rate' is the rate used applied per item to total the fee cost
+#   - 'fee_message' is the message applied to the product to notify the customer.
+# ================================================================
+PRODUCT_DISCOUNTS = [
+  {
+    product_selector_match_type: :include,
+    product_selector_type: :product_id,
+    product_selectors: [6620826665026],
+    fee_selector_match_type: :include,
+    fee_selector_type: :tag,
+    fee_selectors: ['Recycling Fee'],
+    fee_type: :percent,
+    fee_rate: 1.97,
+    fee_message: 'Fee total for applicable items'
+  }
+]
+
+# ================================ Script Code (do not edit) ================================
+# ================================================================
+# ProductSelector
+#
+# Finds matching products by the entered criteria.
+# ================================================================
+class ProductSelector
+  def initialize(match_type, selector_type, selectors)
+    @match_type = match_type
+    @comparator = match_type == :include ? 'any?' : 'none?'
+    @selector_type = selector_type
+    @selectors = selectors
+  end
+
+  def match?(line_item)
+    if self.respond_to?(@selector_type)
+      self.send(@selector_type, line_item)
+    else
+      raise RuntimeError.new('Invalid product selector type')
+    end
+  end
+
+  def tag(line_item)
+    product_tags = line_item.variant.product.tags.map { |tag| tag.downcase.strip }
+    @selectors = @selectors.map { |selector| selector.downcase.strip }
+    (@selectors & product_tags).send(@comparator)
+  end
+
+  def type(line_item)
+    @selectors = @selectors.map { |selector| selector.downcase.strip }
+    (@match_type == :include) == @selectors.include?(line_item.variant.product.product_type.downcase.strip)
+  end
+
+  def vendor(line_item)
+    @selectors = @selectors.map { |selector| selector.downcase.strip }
+    (@match_type == :include) == @selectors.include?(line_item.variant.product.vendor.downcase.strip)
+  end
+
+  def product_id(line_item)
+    (@match_type == :include) == @selectors.include?(line_item.variant.product.id)
+  end
+
+  def variant_id(line_item)
+    (@match_type == :include) == @selectors.include?(line_item.variant.id)
+  end
+
+  def subscription(line_item)
+    !line_item.selling_plan_id.nil?
+  end
+
+  def all(line_item)
+    true
+  end
+end
+
+
+# ================================================================
+# FeeApplicator
+#
+# Applies the entered discount to the supplied line item.
+# ================================================================
+class FeeApplicator
+  def initialize(fee_type, fee_rate, fee_applicable_amount, fee_message)
+    @fee_type = fee_type
+    @fee_message = fee_message
+    @fee_rate = fee_rate
+
+    @fee_amount = if fee_type == :percent
+      fee_applicable_amount * (fee_rate * 0.01)
+    end
+  end
+
+  def apply(line_item)
+    new_line_price = if @fee_type == :percent
+      @fee_amount
+    else
+      line_item.price
+    end
+
+    line_item.change_line_price(new_line_price, message: @fee_message)
+  end
+end
+
+# ================================================================
+# ProductDiscountCampaign
+#
+# Any matching item will be discounted by the entered amount.
+# ================================================================
+class ProductDiscountCampaign
+  def initialize(campaigns)
+    @campaigns = campaigns
+  end
+
+  def run(cart)
+    @campaigns.each do |campaign|
+      product_selector = ProductSelector.new(
+        campaign[:product_selector_match_type],
+        campaign[:product_selector_type],
+        campaign[:product_selectors],
+      )
+      
+      fee_selector = ProductSelector.new(        
+        campaign[:fee_selector_match_type],
+        campaign[:fee_selector_type],
+        campaign[:fee_selectors],)
+
+      applicable_items = cart.line_items.select { |line_item| fee_selector.match?(line_item) }
+      total_applicable_cost = applicable_items.map(&:line_price).reduce(Money.zero, :+)
+      
+      fee_applicator = FeeApplicator.new(
+         campaign[:fee_type],
+         campaign[:fee_rate],
+         total_applicable_cost,
+         campaign[:fee_message]
+        )
+
+      cart.line_items.each do |line_item|
+        next unless product_selector.match?(line_item)
+        fee_applicator.apply(line_item)
+      end
+    end
+  end
+end
+
+CAMPAIGNS = [
+  ProductDiscountCampaign.new(PRODUCT_DISCOUNTS),
+]
+
+CAMPAIGNS.each do |campaign|
+ campaign.run(Input.cart)
+end
+
+Output.cart = Input.cart
