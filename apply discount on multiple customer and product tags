@@ -1,0 +1,22 @@
+Input.cart.line_items.each do |line_item|
+  product = line_item.variant.product
+  next if product.gift_card?
+  customer = Input.cart.customer
+  if customer
+    customerTags = ['wholesale']
+    if customer.tags.any?{|x| customerTags.include?(x)}
+      productTags = ["membership-35", "membership-40"]
+      if product.tags.any?{|x| productTags.include?(x)}
+          line_item.change_line_price(line_item.line_price * 0.90, message:"")
+      end
+    end
+  end
+  #case product.id
+  #when 4468374012017
+  #  line_item.change_line_price(line_item.line_price * 0.90, message: "My Sale")
+  #when 4477971660913
+  #  line_item.change_line_price(line_item.line_price - Money.new(cents: 500), message: "My Sale")
+  #end
+end
+
+Output.cart = Input.cart
